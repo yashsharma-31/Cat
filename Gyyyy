@@ -1,0 +1,196 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>MainWindow</class>
+ <widget class="QMainWindow" name="MainWindow">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>1200</width>
+    <height>800</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>CAT-08 Full Viewer (A,B,C,D)</string>
+  </property>
+  <widget class="QWidget" name="centralwidget">
+   <layout class="QVBoxLayout" name="verticalLayout_main">
+    <item>
+     <layout class="QHBoxLayout" name="horizontalLayout_top">
+      
+      <!-- Left Control Panel -->
+      <item>
+       <widget class="QWidget" name="leftPanel">
+        <layout class="QVBoxLayout" name="verticalLayout_left">
+
+         <!-- GROUPBOX FOR INPUT -->
+         <item>
+          <widget class="QGroupBox" name="groupBoxReceiver">
+           <property name="title">
+            <string>Receiver &amp; Controls</string>
+           </property>
+           <layout class="QGridLayout" name="gridLayout_controls">
+            
+            <!-- Broadcast / Multicast -->
+            <item row="0" column="0">
+             <widget class="QRadioButton" name="radioBroadcast">
+              <property name="text">
+               <string>Broadcast</string>
+              </property>
+              <property name="checked">
+               <bool>true</bool>
+              </property>
+             </widget>
+            </item>
+            <item row="0" column="1">
+             <widget class="QRadioButton" name="radioMulticast">
+              <property name="text">
+               <string>Multicast</string>
+              </property>
+             </widget>
+            </item>
+
+            <!-- Port -->
+            <item row="1" column="0">
+             <widget class="QLabel" name="labelPort">
+              <property name="text">
+               <string>Port:</string>
+              </property>
+             </widget>
+            </item>
+            <item row="1" column="1">
+             <widget class="QLineEdit" name="editPort">
+              <property name="text">
+               <string>9000</string>
+              </property>
+             </widget>
+            </item>
+
+            <!-- Group -->
+            <item row="2" column="0">
+             <widget class="QLabel" name="labelGroup">
+              <property name="text">
+               <string>Group:</string>
+              </property>
+             </widget>
+            </item>
+            <item row="2" column="1">
+             <widget class="QLineEdit" name="editGroup">
+              <property name="enabled">
+               <bool>false</bool>
+              </property>
+              <property name="text">
+               <string>239.255.0.1</string>
+              </property>
+             </widget>
+            </item>
+
+            <!-- Start button -->
+            <item row="3" column="0" colspan="2">
+             <widget class="QPushButton" name="btnStart">
+              <property name="text">
+               <string>Start</string>
+              </property>
+             </widget>
+            </item>
+
+            <!-- Map load -->
+            <item row="4" column="0" colspan="2">
+             <widget class="QPushButton" name="btnLoadMap">
+              <property name="text">
+               <string>Load Map</string>
+              </property>
+             </widget>
+            </item>
+
+            <!-- Save & Load frames -->
+            <item row="5" column="0">
+             <widget class="QPushButton" name="btnSave">
+              <property name="text">
+               <string>Save Frames</string>
+              </property>
+             </widget>
+            </item>
+            <item row="5" column="1">
+             <widget class="QPushButton" name="btnLoad">
+              <property name="text">
+               <string>Load Frames</string>
+              </property>
+             </widget>
+            </item>
+
+            <!-- Playback -->
+            <item row="6" column="0">
+             <widget class="QPushButton" name="btnPlay">
+              <property name="text">
+               <string>Play</string>
+              </property>
+             </widget>
+            </item>
+            <item row="6" column="1">
+             <widget class="QPushButton" name="btnStop">
+              <property name="text">
+               <string>Stop</string>
+              </property>
+             </widget>
+            </item>
+
+           </layout>
+          </widget>
+         </item>
+
+         <!-- Status Label -->
+         <item>
+          <widget class="QLabel" name="labelStatus">
+           <property name="text">
+            <string>Stopped</string>
+           </property>
+          </widget>
+         </item>
+
+         <item><spacer name="verticalSpacerLeft">
+           <property name="orientation">
+            <enum>Qt::Vertical</enum>
+           </property>
+         </spacer></item>
+
+        </layout>
+       </widget>
+      </item>
+
+      <!-- SCENE VIEW -->
+      <item>
+       <widget class="QGraphicsView" name="graphicsView">
+        <property name="minimumSize">
+         <size><width>700</width><height>500</height></size>
+        </property>
+        <property name="renderHints">
+         <set>QPainter::Antialiasing</set>
+        </property>
+       </widget>
+      </item>
+
+     </layout>
+    </item>
+
+    <!-- TABLE -->
+    <item>
+     <widget class="QTableWidget" name="tableVectors">
+      <columncount>7</columncount>
+      <rowcount>0</rowcount>
+      <property name="minimumHeight">
+       <number>160</number>
+      </property>
+      <property name="horizontalHeaderDefaultSectionSize">
+       <number>120</number>
+      </property>
+     </widget>
+    </item>
+
+   </layout>
+  </widget>
+
+ </widget>
+ <resources/>
+ <connections/>
+</ui>
