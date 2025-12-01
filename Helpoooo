@@ -1,0 +1,1268 @@
+Got it — I used Qt 5.12 (MSVC/Qt5 APIs) as earlier you indicated. Below is one single text file that contains the complete project (all source & header files and the .pro) concatenated with clear separators so you can copy, split into files, or save the whole thing as Cat08FullProject.txt.
+
+How to use
+
+1. Save the entire output below into a file Cat08FullProject.txt.
+
+
+2. Open it, locate each section header like ===== filename =====, copy the content between headers into real files (exact filename), and paste into a new Qt Widgets project in Qt Creator (or create files and paste).
+
+
+3. Run qmake/build using a Qt5 kit. Then run the app.
+
+
+4. Use the provided PowerShell test scripts (in the file) to simulate data.
+
+
+
+
+---
+
+===== Cat08Viewer.pro =====
+
+QT += core gui widgets network
+CONFIG += c++17
+TEMPLATE = app
+TARGET = Cat08Viewer
+
+SOURCES += \
+    main.cpp \
+    mainwindow.cpp \
+    udplistener.cpp \
+    receiver.cpp \
+    cat08parser.cpp \
+    animateddot.cpp \
+    framesaver.cpp
+
+HEADERS += \
+    mainwindow.h \
+    udplistener.h \
+    receiver.h \
+    cat08parser.h \
+    animateddot.h \
+    framesaver.h \
+    utils_conv.h
+
+===== main.cpp =====
+
+#include <QApplication>
+#include "mainwindow.h"
+
+int main(int argc, char *argv[])
+{
+    QApplication a(argc, argv);
+    MainWindow w;
+    w.show();
+    return a.exec();
+}
+
+===== utils_conv.h =====
+
+#ifndef UTILS_CONV_H
+#define UTILS_CONV_H
+
+#include <QtGlobal>
+#include <QPointF>
+#include <QtMath>
+
+// Earth radius (mean)
+static constexpr double EARTH_R = 6371000.0;
+
+// meters north -> degrees latitude
+inline double metersToDegLat(double meters) {
+    return (meters / EARTH_R) * (180.0 / M_PI);
+}
+
+// meters east -> degrees longitude at given latitude
+inline double metersToDegLon(double meters, double latDegrees) {
+    double phi = qDegreesToRadians(latDegrees);
+    return (meters / (EARTH_R * qCos(phi))) * (180.0 / M_PI);
+}
+
+// Cartesian (east meters, north meters) relative to lat0/lon0 -> lat/lon
+inline QPointF cartesianToLatLon(double xEastM, double yNorthM, double lat0, double lon0) {
+    double dlat = metersToDegLat(yNorthM);
+    double dlon = metersToDegLon(xEastM, lat0 + dlat / 2.0);
+    return QPointF(lat0 + dlat, lon0 + dlon);
+}
+
+// Simple equirectangular projection: lat/lon -> scene coordinates (meters -> pixels scale)
+inline QPointF latLonToScene(double lat, double lon, double lat0, double lon0, double scaleMetersToPixels) {
+    double dy = (lat - lat0) * (M_PI/180.0) * EARTH_R;
+    double avgLat = (lat + lat0) * 0.5;
+    double dx = (lon - lon0) * (M_PI/180.0) * EARTH_R * qCos(qDegreesToRadians(avgLat));
+    double px = dx * scaleMetersToPixels;
+    double py = -dy * scaleMetersToPixels; // invert Y for Qt scene
+    return QPointF(px, py);
+}
+
+#endif // UTILS_CONV_H
+
+===== cat08parser.h =====
+
+#ifndef CAT08PARSER_H
+#define CAT08PARSER_H
+
+#include <QObject>
+#include <QByteArray>
+#include <QVector>
+#include <QMap>
+#include <QString>
+
+/*
+ A practical CAT-08 DI parser for FRNs 1..12 (common encodings).
+ This parser supports:
+  - FSPEC decoding (multi-octet)
+  - FRN1 (I008/010) Data Source ID (SAC,SIC) - 2 octets
+  - FRN2 (I008/000) Message Type - 1 octet
+  - FRN3 (I008/020) Sector Number - 1 octet
+  - FRN4 (I008/036) Cartesian Weather Vectors - variable
+  - FRN5 (I008/034) Polar Vectors - parsed if present (simple fallback)
+  - FRN6 (I008/040) Vector Quality - 1 octet
+  - FRN7 (I008/050) Contour Points - count + pairs
+  - FRN8..11 parsed as simple bytes
+  - FRN12 (I008/038) Weather Vectors - X1,Y1,X2,Y2 as s16 scaled 2^-5 NM per LSB.
+*/
+
+struct Cat08Vector {
+    int id = -1;             // optional id
+    double x1_nm = 0.0;
+    double y1_nm = 0.0;
+    double x2_nm = 0.0;
+    double y2_nm = 0.0;
+    int intensity = 0;      // 0..255
+    qint64 timestamp = 0;   // epoch secs or feed timestamp
+};
+
+struct DecodedWeather {
+    int sac = 0;
+    int sic = 0;
+    int messageType = 0;
+    qint64 timestamp = 0;
+    QVector<Cat08Vector> vectors;
+};
+
+class Cat08Parser : public QObject
+{
+    Q_OBJECT
+public:
+    explicit Cat08Parser(QObject *parent = nullptr);
+
+    // Parse raw ASTERIX CAT=8 data block
+    bool parseDataBlock(const QByteArray &data, DecodedWeather &out);
+
+    // Build test packet helper
+    static QByteArray buildTestPacket(const QVector<Cat08Vector>& vectors, qint64 timestamp = 0,
+                                      int sac=1, int sic=1);
+
+signals:
+    void parsed(const DecodedWeather &w);
+
+private:
+    quint8 readU8(const QByteArray &b, int pos) const;
+    quint16 readU16(const QByteArray &b, int pos) const;
+    qint16 readS16(const QByteArray &b, int pos) const;
+    quint32 readU32(const QByteArray &b, int pos) const;
+
+    bool readFspecList(const QByteArray &b, int &pos, QVector<bool> &present);
+
+    int parseDI_010(const QByteArray &b, int pos, DecodedWeather &out);
+    int parseDI_000(const QByteArray &b, int pos, DecodedWeather &out);
+    int parseDI_020(const QByteArray &b, int pos, DecodedWeather &out);
+    int parseDI_036(const QByteArray &b, int pos, DecodedWeather &out);
+    int parseDI_034(const QByteArray &b, int pos, DecodedWeather &out);
+    int parseDI_040(const QByteArray &b, int pos, DecodedWeather &out);
+    int parseDI_050(const QByteArray &b, int pos, DecodedWeather &out);
+    int parseDI_060_070_080_090(const QByteArray &b, int pos, DecodedWeather &out, int di);
+    int parseDI_038(const QByteArray &b, int pos, DecodedWeather &out);
+
+    double twoPowNeg5ToNM(int16_t raw) const;
+
+};
+
+#endif // CAT08PARSER_H
+
+===== cat08parser.cpp =====
+
+#include "cat08parser.h"
+#include <QtMath>
+#include <QDebug>
+#include <QDateTime>
+
+Cat08Parser::Cat08Parser(QObject *parent) : QObject(parent) { }
+
+quint8 Cat08Parser::readU8(const QByteArray &b, int pos) const {
+    if (pos < 0 || pos >= b.size()) return 0;
+    return static_cast<quint8>(b.at(pos));
+}
+quint16 Cat08Parser::readU16(const QByteArray &b, int pos) const {
+    if (pos+1 >= b.size()) return 0;
+    return (static_cast<quint8>(b.at(pos)) << 8) | static_cast<quint8>(b.at(pos+1));
+}
+qint16 Cat08Parser::readS16(const QByteArray &b, int pos) const {
+    return static_cast<qint16>(readU16(b,pos));
+}
+quint32 Cat08Parser::readU32(const QByteArray &b, int pos) const {
+    if (pos+3 >= b.size()) return 0;
+    return (static_cast<quint8>(b.at(pos)) << 24) | (static_cast<quint8>(b.at(pos+1)) << 16)
+         | (static_cast<quint8>(b.at(pos+2)) << 8) | static_cast<quint8>(b.at(pos+3));
+}
+
+bool Cat08Parser::readFspecList(const QByteArray &b, int &pos, QVector<bool> &present) {
+    present.clear();
+    bool cont = true;
+    int p = pos;
+    while (cont) {
+        if (p >= b.size()) return false;
+        quint8 oct = readU8(b,p++);
+        for (int bit=0; bit<7; ++bit) {
+            bool val = (oct & (0x80 >> bit)) != 0;
+            present.append(val);
+        }
+        cont = (oct & 0x01);
+    }
+    pos = p;
+    return true;
+}
+double Cat08Parser::twoPowNeg5ToNM(int16_t raw) const {
+    return double(raw) * qPow(2.0, -5);
+}
+
+int Cat08Parser::parseDI_010(const QByteArray &b, int pos, DecodedWeather &out) {
+    if (pos + 1 >= b.size()) return pos;
+    out.sac = readU8(b,pos); pos++;
+    out.sic = readU8(b,pos); pos++;
+    return pos;
+}
+int Cat08Parser::parseDI_000(const QByteArray &b, int pos, DecodedWeather &out) {
+    if (pos >= b.size()) return pos;
+    out.messageType = readU8(b,pos); pos++;
+    return pos;
+}
+int Cat08Parser::parseDI_020(const QByteArray &b, int pos, DecodedWeather &out) {
+    if (pos >= b.size()) return pos;
+    pos++;
+    return pos;
+}
+int Cat08Parser::parseDI_036(const QByteArray &b, int pos, DecodedWeather &out) {
+    if (pos >= b.size()) return pos;
+    quint8 n = readU8(b,pos); pos++;
+    for (int i=0;i<n;i++) {
+        if (pos + 3 >= b.size()) break;
+        qint16 rx = readS16(b,pos); pos += 2;
+        qint16 ry = readS16(b,pos); pos += 2;
+        int intensity = 0;
+        if (pos < b.size()) { intensity = readU8(b,pos); pos++; }
+        Cat08Vector vec;
+        vec.x1_nm = twoPowNeg5ToNM(rx);
+        vec.y1_nm = twoPowNeg5ToNM(ry);
+        vec.x2_nm = vec.x1_nm;
+        vec.y2_nm = vec.y1_nm;
+        vec.intensity = intensity;
+        out.vectors.append(vec);
+    }
+    return pos;
+}
+int Cat08Parser::parseDI_034(const QByteArray &b, int pos, DecodedWeather &out) {
+    if (pos >= b.size()) return pos;
+    quint8 n = readU8(b,pos); pos++;
+    for (int i=0;i<n;i++) {
+        if (pos + 4 >= b.size()) break;
+        quint16 rho = readU16(b,pos); pos+=2;
+        quint16 theta = readU16(b,pos); pos+=2;
+        int intensity = 0;
+        if (pos < b.size()) { intensity = readU8(b,pos); pos++; }
+        double rho_nm = double(rho);
+        double az = double(theta) / 100.0;
+        double rad = qDegreesToRadians(az);
+        double x_nm = rho_nm * qSin(rad);
+        double y_nm = rho_nm * qCos(rad);
+        Cat08Vector vec;
+        vec.x1_nm = x_nm;
+        vec.y1_nm = y_nm;
+        vec.x2_nm = x_nm;
+        vec.y2_nm = y_nm;
+        vec.intensity = intensity;
+        out.vectors.append(vec);
+    }
+    return pos;
+}
+int Cat08Parser::parseDI_040(const QByteArray &b, int pos, DecodedWeather &out) {
+    if (pos >= b.size()) return pos;
+    pos++;
+    return pos;
+}
+int Cat08Parser::parseDI_050(const QByteArray &b, int pos, DecodedWeather &out) {
+    if (pos >= b.size()) return pos;
+    quint8 n = readU8(b,pos); pos++;
+    for (int i=0;i<n;i++) {
+        if (pos + 3 >= b.size()) break;
+        qint16 rx = readS16(b,pos); pos+=2;
+        qint16 ry = readS16(b,pos); pos+=2;
+        Cat08Vector v;
+        v.x1_nm = twoPowNeg5ToNM(rx);
+        v.y1_nm = twoPowNeg5ToNM(ry);
+        v.x2_nm = v.x1_nm; v.y2_nm = v.y1_nm;
+        out.vectors.append(v);
+    }
+    return pos;
+}
+int Cat08Parser::parseDI_060_070_080_090(const QByteArray &b, int pos, DecodedWeather &out, int di) {
+    if (pos >= b.size()) return pos;
+    pos++;
+    return pos;
+}
+int Cat08Parser::parseDI_038(const QByteArray &b, int pos, DecodedWeather &out) {
+    if (pos >= b.size()) return pos;
+    quint8 n = readU8(b,pos); pos++;
+    for (int i=0;i<n;i++) {
+        if (pos + 7 >= b.size()) break;
+        qint16 rx1 = readS16(b,pos); pos+=2;
+        qint16 ry1 = readS16(b,pos); pos+=2;
+        qint16 rx2 = readS16(b,pos); pos+=2;
+        qint16 ry2 = readS16(b,pos); pos+=2;
+
+        int intensity = 0;
+        int id = -1;
+        if (pos < b.size()) {
+            intensity = readU8(b,pos); pos++;
+            if (pos + 1 < b.size()) {
+                id = readU16(b,pos);
+                pos += 2;
+            }
+        }
+
+        Cat08Vector v;
+        v.x1_nm = twoPowNeg5ToNM(rx1);
+        v.y1_nm = twoPowNeg5ToNM(ry1);
+        v.x2_nm = twoPowNeg5ToNM(rx2);
+        v.y2_nm = twoPowNeg5ToNM(ry2);
+        v.intensity = intensity;
+        v.id = id;
+        out.vectors.append(v);
+    }
+    return pos;
+}
+
+bool Cat08Parser::parseDataBlock(const QByteArray &data, DecodedWeather &out)
+{
+    out = DecodedWeather();
+
+    if (data.size() < 3) return false;
+    int pos = 0;
+    quint8 cat = readU8(data,pos); pos++;
+    if (cat != 0x08) {
+        qWarning() << "cat != 8, got" << cat << "— parser expects CAT=8";
+        return false;
+    }
+
+    quint16 len = readU16(data,pos); pos += 2;
+    Q_UNUSED(len);
+
+    QVector<bool> present;
+    if (!readFspecList(data, pos, present)) {
+        qWarning() << "FSPEC parse failed";
+        return false;
+    }
+
+    int frnIndex = 1;
+    int idx = pos;
+    for (int i=0;i<present.size();++i, ++frnIndex) {
+        if (!present[i]) continue;
+        switch (frnIndex) {
+            case 1: idx = parseDI_010(data, idx, out); break;
+            case 2: idx = parseDI_000(data, idx, out); break;
+            case 3: idx = parseDI_020(data, idx, out); break;
+            case 4: idx = parseDI_036(data, idx, out); break;
+            case 5: idx = parseDI_034(data, idx, out); break;
+            case 6: idx = parseDI_040(data, idx, out); break;
+            case 7: idx = parseDI_050(data, idx, out); break;
+            case 8: idx = parseDI_060_070_080_090(data, idx, out, 60); break;
+            case 9: idx = parseDI_060_070_080_090(data, idx, out, 70); break;
+            case 10: idx = parseDI_060_070_080_090(data, idx, out, 80); break;
+            case 11: idx = parseDI_060_070_080_090(data, idx, out, 90); break;
+            case 12: idx = parseDI_038(data, idx, out); break;
+            default:
+                break;
+        }
+    }
+
+    out.timestamp = static_cast<qint64>(QDateTime::currentSecsSinceEpoch());
+    emit parsed(out);
+    return true;
+}
+
+// Build test packet matching parser format.
+QByteArray Cat08Parser::buildTestPacket(const QVector<Cat08Vector>& vectors, qint64 timestamp, int sac, int sic)
+{
+    QByteArray out;
+    out.append(static_cast<char>(0x08));
+    out.append('\0'); out.append('\0');
+    out.append(static_cast<char>(0x01));
+    out.append(static_cast<char>(0x04));
+
+    quint32 ts = timestamp ? static_cast<quint32>(timestamp) : static_cast<quint32>(QDateTime::currentSecsSinceEpoch());
+    out.append(static_cast<char>((ts >> 24) & 0xFF));
+    out.append(static_cast<char>((ts >> 16) & 0xFF));
+    out.append(static_cast<char>((ts >> 8) & 0xFF));
+    out.append(static_cast<char>(ts & 0xFF));
+
+    out.append(static_cast<char>(vectors.size() & 0xFF));
+    for (const Cat08Vector &v : vectors) {
+        auto nmToRaw = [](double nm)->qint16 {
+            double r = nm / qPow(2.0, -5);
+            return static_cast<qint16>(qRound(r));
+        };
+        qint16 rx1 = nmToRaw(v.x1_nm);
+        qint16 ry1 = nmToRaw(v.y1_nm);
+        qint16 rx2 = nmToRaw(v.x2_nm);
+        qint16 ry2 = nmToRaw(v.y2_nm);
+        out.append(static_cast<char>((rx1 >> 8) & 0xFF)); out.append(static_cast<char>(rx1 & 0xFF));
+        out.append(static_cast<char>((ry1 >> 8) & 0xFF)); out.append(static_cast<char>(ry1 & 0xFF));
+        out.append(static_cast<char>((rx2 >> 8) & 0xFF)); out.append(static_cast<char>(rx2 & 0xFF));
+        out.append(static_cast<char>((ry2 >> 8) & 0xFF)); out.append(static_cast<char>(ry2 & 0xFF));
+        out.append(static_cast<char>(v.intensity & 0xFF));
+    }
+
+    int len = out.size();
+    out[1] = static_cast<char>((len >> 8) & 0xFF);
+    out[2] = static_cast<char>(len & 0xFF);
+    return out;
+}
+
+===== udplistener.h =====
+
+#ifndef UDPLISTENER_H
+#define UDPLISTENER_H
+
+#include <QObject>
+#include <QUdpSocket>
+#include <QHostAddress>
+
+class UdpListener : public QObject
+{
+    Q_OBJECT
+public:
+    explicit UdpListener(quint16 port = 9000, QObject *parent = nullptr);
+
+    bool start(); // bind any/broadcast
+    bool startMulticast(const QString &group);
+    void stop();
+
+signals:
+    void datagramReceived(const QByteArray &data, const QHostAddress &sender, quint16 senderPort);
+
+private slots:
+    void readPendingDatagrams();
+
+private:
+    QUdpSocket *m_socket;
+    quint16 m_port;
+    QHostAddress m_group;
+    bool m_multicast = false;
+};
+
+#endif // UDPLISTENER_H
+
+===== udplistener.cpp =====
+
+#include "udplistener.h"
+#include <QDebug>
+
+UdpListener::UdpListener(quint16 port, QObject *parent)
+    : QObject(parent), m_socket(new QUdpSocket(this)), m_port(port)
+{
+}
+
+bool UdpListener::start()
+{
+    if (!m_socket->bind(QHostAddress::AnyIPv4, m_port, QUdpSocket::ShareAddress | QUdpSocket::ReuseAddressHint)) {
+        qWarning() << "Failed to bind UDP port" << m_port << ":" << m_socket->errorString();
+        return false;
+    }
+    connect(m_socket, &QUdpSocket::readyRead, this, &UdpListener::readPendingDatagrams);
+    qInfo() << "Listening on UDP port" << m_port;
+    m_multicast = false;
+    return true;
+}
+
+bool UdpListener::startMulticast(const QString &group)
+{
+    if (!m_socket->bind(QHostAddress::AnyIPv4, m_port, QUdpSocket::ShareAddress | QUdpSocket::ReuseAddressHint)) {
+        qWarning() << "Multicast bind failed:" << m_socket->errorString();
+        return false;
+    }
+    m_group = QHostAddress(group);
+    if (!m_socket->joinMulticastGroup(m_group)) {
+        qWarning() << "Join multicast group failed:" << group;
+        return false;
+    }
+    connect(m_socket, &QUdpSocket::readyRead, this, &UdpListener::readPendingDatagrams);
+    qInfo() << "Listening multicast on" << group << "port" << m_port;
+    m_multicast = true;
+    return true;
+}
+
+void UdpListener::stop()
+{
+    if (m_socket) {
+        disconnect(m_socket, &QUdpSocket::readyRead, this, &UdpListener::readPendingDatagrams);
+        if (m_multicast && !m_group.isNull()) {
+            m_socket->leaveMulticastGroup(m_group);
+            m_multicast = false;
+        }
+        m_socket->close();
+    }
+}
+
+void UdpListener::readPendingDatagrams()
+{
+    while (m_socket->hasPendingDatagrams()) {
+        QByteArray buffer;
+        buffer.resize(static_cast<int>(m_socket->pendingDatagramSize()));
+        QHostAddress sender;
+        quint16 senderPort;
+        m_socket->readDatagram(buffer.data(), buffer.size(), &sender, &senderPort);
+        emit datagramReceived(buffer, sender, senderPort);
+    }
+}
+
+===== framesaver.h =====
+
+#ifndef FRAMESAVER_H
+#define FRAMESAVER_H
+
+#include <QObject>
+#include <QVector>
+#include <QJsonDocument>
+#include <QTimer>
+#include "cat08parser.h"
+
+// Simple class to save/load sequences of DecodedWeather frames as JSON, and to provide playback.
+class FrameSaver : public QObject {
+    Q_OBJECT
+public:
+    explicit FrameSaver(QObject *parent = nullptr);
+
+    bool saveToFile(const QString &filename, const QVector<DecodedWeather> &frames);
+    bool loadFromFile(const QString &filename);
+    QVector<DecodedWeather> frames() const;
+
+    void startPlayback(int msInterval = 300);
+    void stopPlayback();
+    bool isPlaying() const { return m_timer.isActive(); }
+
+signals:
+    void frameReady(const DecodedWeather &f);
+    void playbackFinished();
+
+private slots:
+    void onTimerTick();
+
+private:
+    QVector<DecodedWeather> m_frames;
+    int m_playIndex = 0;
+    QTimer m_timer;
+};
+
+#endif // FRAMESAVER_H
+
+===== framesaver.cpp =====
+
+#include "framesaver.h"
+#include <QFile>
+#include <QJsonArray>
+#include <QJsonObject>
+#include <QDebug>
+
+FrameSaver::FrameSaver(QObject *parent) : QObject(parent) {
+    connect(&m_timer, &QTimer::timeout, this, &FrameSaver::onTimerTick);
+}
+
+bool FrameSaver::saveToFile(const QString &filename, const QVector<DecodedWeather> &frames) {
+    QJsonArray arr;
+    for (const DecodedWeather &f : frames) {
+        QJsonObject obj;
+        obj["sac"] = f.sac;
+        obj["sic"] = f.sic;
+        obj["messageType"] = f.messageType;
+        obj["timestamp"] = QString::number(f.timestamp);
+
+        QJsonArray vecs;
+        for (const Cat08Vector &v : f.vectors) {
+            QJsonObject vo;
+            vo["id"] = v.id;
+            vo["x1_nm"] = v.x1_nm;
+            vo["y1_nm"] = v.y1_nm;
+            vo["x2_nm"] = v.x2_nm;
+            vo["y2_nm"] = v.y2_nm;
+            vo["intensity"] = v.intensity;
+            vecs.append(vo);
+        }
+        obj["vectors"] = vecs;
+        arr.append(obj);
+    }
+    QJsonDocument doc(arr);
+    QFile f(filename);
+    if (!f.open(QIODevice::WriteOnly)) return false;
+    f.write(doc.toJson());
+    f.close();
+    return true;
+}
+
+bool FrameSaver::loadFromFile(const QString &filename) {
+    QFile f(filename);
+    if (!f.open(QIODevice::ReadOnly)) return false;
+    QByteArray all = f.readAll();
+    f.close();
+    QJsonDocument doc = QJsonDocument::fromJson(all);
+    if (!doc.isArray()) return false;
+    m_frames.clear();
+    QJsonArray arr = doc.array();
+    for (const QJsonValue &val : arr) {
+        if (!val.isObject()) continue;
+        QJsonObject obj = val.toObject();
+        DecodedWeather w;
+        w.sac = obj["sac"].toInt();
+        w.sic = obj["sic"].toInt();
+        w.messageType = obj["messageType"].toInt();
+        w.timestamp = obj["timestamp"].toString().toLongLong();
+        QJsonArray vecs = obj["vectors"].toArray();
+        for (const QJsonValue &vv : vecs) {
+            QJsonObject vo = vv.toObject();
+            Cat08Vector v;
+            v.id = vo["id"].toInt();
+            v.x1_nm = vo["x1_nm"].toDouble();
+            v.y1_nm = vo["y1_nm"].toDouble();
+            v.x2_nm = vo["x2_nm"].toDouble();
+            v.y2_nm = vo["y2_nm"].toDouble();
+            v.intensity = vo["intensity"].toInt();
+            w.vectors.append(v);
+        }
+        m_frames.append(w);
+    }
+    m_playIndex = 0;
+    return true;
+}
+
+QVector<DecodedWeather> FrameSaver::frames() const {
+    return m_frames;
+}
+
+void FrameSaver::startPlayback(int msInterval) {
+    if (m_frames.isEmpty()) return;
+    m_playIndex = 0;
+    m_timer.start(msInterval);
+}
+
+void FrameSaver::stopPlayback() {
+    m_timer.stop();
+}
+
+void FrameSaver::onTimerTick() {
+    if (m_playIndex >= m_frames.size()) {
+        m_timer.stop();
+        emit playbackFinished();
+        return;
+    }
+    emit frameReady(m_frames.at(m_playIndex));
+    m_playIndex++;
+}
+
+===== animateddot.h =====
+
+#ifndef ANIMATEDDOT_H
+#define ANIMATEDDOT_H
+
+#include <QGraphicsEllipseItem>
+#include <QObject>
+#include <QPropertyAnimation>
+
+class AnimatedDot : public QObject, public QGraphicsEllipseItem
+{
+    Q_OBJECT
+    Q_PROPERTY(QPointF pos READ pos WRITE setPos)
+
+public:
+    explicit AnimatedDot(QGraphicsItem *parent = nullptr)
+        : QObject(), QGraphicsEllipseItem(parent)
+    {
+        setRect(-5, -5, 10, 10);
+        setBrush(Qt::yellow);
+        setPen(QPen(Qt::yellow));
+        m_anim = new QPropertyAnimation(this, "pos", this);
+        m_anim->setDuration(600);
+        m_anim->setEasingCurve(QEasingCurve::InOutQuad);
+    }
+
+    void moveToSmooth(const QPointF &newPos) {
+        if (!m_anim) return;
+        m_anim->stop();
+        m_anim->setStartValue(pos());
+        m_anim->setEndValue(newPos);
+        m_anim->start();
+    }
+private:
+    QPropertyAnimation *m_anim = nullptr;
+};
+
+#endif // ANIMATEDDOT_H
+
+===== animateddot.cpp =====
+
+#include "animateddot.h"
+// empty — implementation in header
+
+===== receiver.h =====
+
+#ifndef RECEIVER_H
+#define RECEIVER_H
+
+#include <QObject>
+#include <QVector>
+#include "udplistener.h"
+#include "cat08parser.h"
+
+class Receiver : public QObject
+{
+    Q_OBJECT
+public:
+    explicit Receiver(QObject *parent = nullptr);
+    ~Receiver();
+
+    bool start(int mode, const QString &group, quint16 port); // mode:1=bc,2=mc
+    void stop();
+
+    QVector<DecodedWeather> history() const { return m_history; }
+    void clearHistory() { m_history.clear(); }
+
+signals:
+    void weatherReceived(const DecodedWeather &msg);
+
+private slots:
+    void onDatagram(const QByteArray &data, const QHostAddress &sender, quint16 port);
+
+private:
+    UdpListener *m_listener = nullptr;
+    Cat08Parser *m_parser = nullptr;
+    QVector<DecodedWeather> m_history;
+    int m_historyLimit = 200; // keep last N frames
+};
+
+#endif // RECEIVER_H
+
+===== receiver.cpp =====
+
+#include "receiver.h"
+#include <QDebug>
+
+Receiver::Receiver(QObject *parent)
+    : QObject(parent),
+      m_listener(new UdpListener(9000, this)),
+      m_parser(new Cat08Parser(this))
+{
+    connect(m_listener, &UdpListener::datagramReceived, this, &Receiver::onDatagram);
+    connect(m_parser, &Cat08Parser::parsed, this, [this](const DecodedWeather &w){
+        emit weatherReceived(w);
+        m_history.append(w);
+        while (m_history.size() > m_historyLimit) m_history.removeFirst();
+    });
+}
+
+Receiver::~Receiver()
+{
+    if (m_listener) m_listener->stop();
+}
+
+bool Receiver::start(int mode, const QString &group, quint16 port) {
+    Q_UNUSED(group)
+    if (m_listener) {
+        delete m_listener;
+        m_listener = new UdpListener(port, this);
+        connect(m_listener, &UdpListener::datagramReceived, this, &Receiver::onDatagram);
+    }
+    if (mode == 1) {
+        return m_listener->start();
+    } else {
+        return m_listener->startMulticast(group);
+    }
+}
+
+void Receiver::stop() {
+    if (m_listener) m_listener->stop();
+}
+
+void Receiver::onDatagram(const QByteArray &data, const QHostAddress &sender, quint16 port) {
+    Q_UNUSED(sender); Q_UNUSED(port);
+    DecodedWeather w;
+    if (m_parser->parseDataBlock(data, w)) {
+        emit weatherReceived(w);
+    } else {
+        qWarning() << "Receiver: failed to parse incoming datagram (len="<<data.size()<<")";
+    }
+}
+
+===== mainwindow.h =====
+
+#ifndef MAINWINDOW_H
+#define MAINWINDOW_H
+
+#include <QMainWindow>
+#include <QGraphicsScene>
+#include <QMap>
+#include "animateddot.h"
+#include "receiver.h"
+#include "framesaver.h"
+#include "utils_conv.h"
+
+QT_BEGIN_NAMESPACE
+class QPushButton;
+class QLineEdit;
+class QRadioButton;
+class QGraphicsView;
+class QTableWidget;
+class QLabel;
+class QSlider;
+QT_END_NAMESPACE
+
+class MainWindow : public QMainWindow
+{
+    Q_OBJECT
+public:
+    MainWindow(QWidget *parent = nullptr);
+    ~MainWindow();
+
+private slots:
+    void onStartClicked();
+    void onWeatherReceived(const DecodedWeather &msg);
+    void onSaveFrames();
+    void onLoadFrames();
+    void onStartPlayback();
+    void onStopPlayback();
+    void onPlaybackFrame(const DecodedWeather &f);
+    void onMapLoad();
+
+private:
+    void setupUi();
+    void drawWeather(const DecodedWeather &msg);
+    QColor colorForIntensity(int intensity);
+    QPointF latlonToScenePoint(double lat, double lon);
+
+    // widgets
+    QLineEdit *m_portEdit;
+    QLineEdit *m_groupEdit;
+    QRadioButton *m_broadcastRadio;
+    QRadioButton *m_multicastRadio;
+    QPushButton *m_startBtn;
+    QPushButton *m_loadMapBtn;
+    QPushButton *m_saveBtn;
+    QPushButton *m_loadBtn;
+    QPushButton *m_playBtn;
+    QPushButton *m_stopBtn;
+    QGraphicsView *m_view;
+    QGraphicsScene *m_scene;
+    QTableWidget *m_table;
+    QLabel *m_status;
+
+    // backend
+    Receiver *m_receiver;
+    FrameSaver *m_saver;
+
+    // dots & trails
+    QMap<int, AnimatedDot*> m_dots;
+    QMap<int, QVector<QGraphicsItem*>> m_trails; // list of trail items per id
+
+    // map/projection settings
+    double m_refLat;
+    double m_refLon;
+    double m_scaleMetersToPixels; // user-tweakable
+
+    // background
+    QGraphicsPixmapItem *m_mapImage = nullptr;
+};
+
+#endif // MAINWINDOW_H
+
+===== mainwindow.cpp =====
+
+#include "mainwindow.h"
+#include <QPushButton>
+#include <QLineEdit>
+#include <QRadioButton>
+#include <QGraphicsView>
+#include <QTableWidget>
+#include <QHeaderView>
+#include <QVBoxLayout>
+#include <QHBoxLayout>
+#include <QGroupBox>
+#include <QLabel>
+#include <QFileDialog>
+#include <QMessageBox>
+#include <QJsonDocument>
+#include <QFile>
+#include <QGraphicsPixmapItem>
+#include <QImage>
+#include <QGraphicsEllipseItem>
+
+MainWindow::MainWindow(QWidget *parent)
+    : QMainWindow(parent),
+      m_scene(new QGraphicsScene(this)),
+      m_receiver(new Receiver(this)),
+      m_saver(new FrameSaver(this)),
+      m_refLat(52.5200),
+      m_refLon(13.4050),
+      m_scaleMetersToPixels(0.0005) // default (tweak as required)
+{
+    setupUi();
+    connect(m_receiver, &Receiver::weatherReceived, this, &MainWindow::onWeatherReceived);
+    connect(m_saver, &FrameSaver::frameReady, this, &MainWindow::onPlaybackFrame);
+    connect(m_saver, &FrameSaver::playbackFinished, this, [this](){
+        m_status->setText("Playback finished");
+    });
+}
+
+MainWindow::~MainWindow()
+{
+    m_receiver->stop();
+}
+
+void MainWindow::setupUi()
+{
+    QWidget *central = new QWidget(this);
+    setCentralWidget(central);
+
+    // Controls
+    QGroupBox *grp = new QGroupBox(tr("Receiver & Controls"));
+    m_broadcastRadio = new QRadioButton("Broadcast");
+    m_multicastRadio = new QRadioButton("Multicast");
+    m_broadcastRadio->setChecked(true);
+    m_portEdit = new QLineEdit("9000");
+    m_groupEdit = new QLineEdit("239.255.0.1");
+    m_groupEdit->setEnabled(false);
+    m_startBtn = new QPushButton("Start");
+
+    m_loadMapBtn = new QPushButton("Load Map");
+    m_saveBtn = new QPushButton("Save Frames");
+    m_loadBtn = new QPushButton("Load Frames");
+    m_playBtn = new QPushButton("Play");
+    m_stopBtn = new QPushButton("Stop");
+
+    connect(m_multicastRadio, &QRadioButton::toggled, this, [this](bool t){ m_groupEdit->setEnabled(t); });
+    connect(m_startBtn, &QPushButton::clicked, this, &MainWindow::onStartClicked);
+    connect(m_loadMapBtn, &QPushButton::clicked, this, &MainWindow::onMapLoad);
+    connect(m_saveBtn, &QPushButton::clicked, this, &MainWindow::onSaveFrames);
+    connect(m_loadBtn, &QPushButton::clicked, this, &MainWindow::onLoadFrames);
+    connect(m_playBtn, &QPushButton::clicked, this, &MainWindow::onStartPlayback);
+    connect(m_stopBtn, &QPushButton::clicked, this, &MainWindow::onStopPlayback);
+
+    QGridLayout *g = new QGridLayout;
+    g->addWidget(m_broadcastRadio, 0, 0);
+    g->addWidget(m_multicastRadio, 0, 1);
+    g->addWidget(new QLabel("Port:"), 1, 0);
+    g->addWidget(m_portEdit, 1, 1);
+    g->addWidget(new QLabel("Group:"), 2, 0);
+    g->addWidget(m_groupEdit, 2, 1);
+    g->addWidget(m_startBtn, 3, 0, 1, 2);
+    g->addWidget(m_loadMapBtn, 4, 0, 1, 2);
+    g->addWidget(m_saveBtn, 5, 0);
+    g->addWidget(m_loadBtn, 5, 1);
+    g->addWidget(m_playBtn, 6, 0);
+    g->addWidget(m_stopBtn, 6, 1);
+
+    grp->setLayout(g);
+
+    // scene & view
+    m_view = new QGraphicsView(m_scene);
+    m_view->setBackgroundBrush(Qt::black);
+    m_view->setRenderHint(QPainter::Antialiasing);
+    m_view->setMinimumSize(700, 500);
+
+    // table
+    m_table = new QTableWidget(0, 7);
+    m_table->setHorizontalHeaderLabels(QStringList() << "Idx" << "ID" << "X1(NM)" << "Y1(NM)" << "X2(NM)" << "Y2(NM)" << "Intensity");
+    m_table->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    m_table->setMinimumHeight(160);
+
+    // status
+    m_status = new QLabel("Stopped");
+
+    // layout
+    QHBoxLayout *top = new QHBoxLayout;
+    QWidget *leftWidget = new QWidget;
+    QVBoxLayout *lv = new QVBoxLayout(leftWidget);
+    lv->addWidget(grp);
+    lv->addWidget(m_status);
+    lv->addStretch();
+    leftWidget->setMaximumWidth(280);
+
+    top->addWidget(leftWidget);
+    top->addWidget(m_view, 1);
+
+    QVBoxLayout *main = new QVBoxLayout(central);
+    main->addLayout(top);
+    main->addWidget(m_table);
+
+    setWindowTitle("CAT-08 Full Viewer (A,B,C,D)");
+    resize(1200, 800);
+}
+
+void MainWindow::onStartClicked()
+{
+    quint16 port = static_cast<quint16>(m_portEdit->text().toUShort());
+    bool ok = false;
+    if (m_broadcastRadio->isChecked()) {
+        ok = m_receiver->start(1, QString(), port);
+    } else {
+        ok = m_receiver->start(2, m_groupEdit->text().trimmed(), port);
+    }
+    if (!ok) {
+        QMessageBox::warning(this, "Receiver", "Failed to start receiver");
+        return;
+    }
+    m_status->setText(QString("Listening on port %1").arg(port));
+    m_startBtn->setEnabled(false);
+}
+
+void MainWindow::onMapLoad()
+{
+    QString fn = QFileDialog::getOpenFileName(this, "Open map image");
+    if (fn.isEmpty()) return;
+    QImage img(fn);
+    if (img.isNull()) {
+        QMessageBox::warning(this, "Map", "Could not open image");
+        return;
+    }
+    if (m_mapImage) {
+        m_scene->removeItem(m_mapImage);
+        delete m_mapImage;
+        m_mapImage = nullptr;
+    }
+    QPixmap px = QPixmap::fromImage(img);
+    m_mapImage = m_scene->addPixmap(px);
+    m_mapImage->setZValue(-10);
+    m_view->fitInView(m_scene->itemsBoundingRect(), Qt::KeepAspectRatio);
+}
+
+QColor MainWindow::colorForIntensity(int intensity)
+{
+    double t = qBound(0, intensity, 255) / 255.0;
+    if (t < 0.5) {
+        double f = t / 0.5;
+        int r = static_cast<int>(f * 255);
+        int g = 255;
+        return QColor(r, g, 0);
+    } else {
+        double f = (t - 0.5) / 0.5;
+        int r = 255;
+        int g = static_cast<int>((1.0 - f) * 255);
+        return QColor(r, g, 0);
+    }
+}
+
+void MainWindow::onWeatherReceived(const DecodedWeather &msg)
+{
+    drawWeather(msg);
+}
+
+QPointF MainWindow::latlonToScenePoint(double lat, double lon)
+{
+    return latLonToScene(lat, lon, m_refLat, m_refLon, m_scaleMetersToPixels);
+}
+
+void MainWindow::drawWeather(const DecodedWeather &msg)
+{
+    QList<QGraphicsItem*> items = m_scene->items();
+    for (QGraphicsItem *it : items) {
+        if (m_mapImage && it == m_mapImage) continue;
+        m_scene->removeItem(it);
+        delete it;
+    }
+
+    int idx = 0;
+    m_table->setRowCount(0);
+    for (const Cat08Vector &v : msg.vectors) {
+        double x1_m = v.x1_nm * 1852.0;
+        double y1_m = v.y1_nm * 1852.0;
+        double x2_m = v.x2_nm * 1852.0;
+        double y2_m = v.y2_nm * 1852.0;
+
+        QPointF latlon1 = cartesianToLatLon(x1_m, y1_m, m_refLat, m_refLon);
+        QPointF latlon2 = cartesianToLatLon(x2_m, y2_m, m_refLat, m_refLon);
+
+        QPointF p1 = latlonToScenePoint(latlon1.x(), latlon1.y());
+        QPointF p2 = latlonToScenePoint(latlon2.x(), latlon2.y());
+
+        QColor c = colorForIntensity(v.intensity);
+        QPen pen(c);
+        pen.setWidth(2);
+        m_scene->addLine(p1.x(), p1.y(), p2.x(), p2.y(), pen);
+
+        int key = (v.id >= 0) ? v.id : idx;
+        AnimatedDot *dot = nullptr;
+        if (!m_dots.contains(key)) {
+            dot = new AnimatedDot();
+            dot->setPos(p2);
+            m_scene->addItem(dot);
+            m_dots.insert(key, dot);
+        } else {
+            dot = m_dots.value(key);
+            dot->moveToSmooth(p2);
+        }
+
+        QVector<QGraphicsItem*> &trail = m_trails[key];
+        QGraphicsEllipseItem *trailDot = m_scene->addEllipse(p2.x()-2.5, p2.y()-2.5, 5, 5, QPen(c), QBrush(c));
+        trail.append(trailDot);
+        while (trail.size() > 8) {
+            QGraphicsItem *it = trail.takeFirst();
+            m_scene->removeItem(it);
+            delete it;
+        }
+
+        int row = m_table->rowCount();
+        m_table->insertRow(row);
+        m_table->setItem(row, 0, new QTableWidgetItem(QString::number(row+1)));
+        m_table->setItem(row, 1, new QTableWidgetItem(QString::number(v.id)));
+        m_table->setItem(row, 2, new QTableWidgetItem(QString::number(v.x1_nm)));
+        m_table->setItem(row, 3, new QTableWidgetItem(QString::number(v.y1_nm)));
+        m_table->setItem(row, 4, new QTableWidgetItem(QString::number(v.x2_nm)));
+        m_table->setItem(row, 5, new QTableWidgetItem(QString::number(v.y2_nm)));
+        m_table->setItem(row, 6, new QTableWidgetItem(QString::number(v.intensity)));
+
+        idx++;
+    }
+
+    if (!m_scene->itemsBoundingRect().isEmpty()) {
+        m_view->fitInView(m_scene->itemsBoundingRect(), Qt::KeepAspectRatio);
+    }
+}
+
+void MainWindow::onSaveFrames()
+{
+    QString fn = QFileDialog::getSaveFileName(this, "Save frames as JSON", QString(), "*.json");
+    if (fn.isEmpty()) return;
+    QVector<DecodedWeather> frames = m_receiver->history();
+    if (frames.isEmpty()) {
+        QMessageBox::information(this, "Save", "No frames to save.");
+        return;
+    }
+    if (!m_saver->saveToFile(fn, frames)) {
+        QMessageBox::warning(this, "Save", "Failed to save file.");
+        return;
+    }
+    m_status->setText("Saved frames to " + fn);
+}
+
+void MainWindow::onLoadFrames()
+{
+    QString fn = QFileDialog::getOpenFileName(this, "Open frames JSON", QString(), "*.json");
+    if (fn.isEmpty()) return;
+    if (!m_saver->loadFromFile(fn)) {
+        QMessageBox::warning(this, "Load", "Failed to load file.");
+        return;
+    }
+    m_status->setText(QString("Loaded %1 frames").arg(m_saver->frames().size()));
+}
+
+void MainWindow::onStartPlayback()
+{
+    m_saver->startPlayback(300);
+    m_status->setText("Playback started");
+}
+
+void MainWindow::onStopPlayback()
+{
+    m_saver->stopPlayback();
+    m_status->setText("Playback stopped");
+}
+
+void MainWindow::onPlaybackFrame(const DecodedWeather &f)
+{
+    m_table->setRowCount(0);
+    drawWeather(f);
+}
+
+===== PowerShell Test Script (Broadcast continuous) =====
+
+$udp = New-Object System.Net.Sockets.UdpClient
+$server = "255.255.255.255"
+$port = 9000
+
+for ($i=0; $i -lt 400; $i++) {
+    $vectors = @()
+
+    $va = @{
+        id = 100
+        x1 = 10 + $i/30.0
+        y1 = 2
+        x2 = 12 + $i/30.0
+        y2 = 4
+        intensity = [int]((50 + 100 * [math]::Abs([math]::Sin($i/20.0))))
+    }
+    $vectors += ,$va
+
+    $vb = @{
+        id = 200
+        x1 = -8 + $i/45.0
+        y1 = 6
+        x2 = -6 + $i/45.0
+        y2 = 8
+        intensity = [int]((200 - 120 * [math]::Abs([math]::Sin($i/10.0))))
+    }
+    $vectors += ,$vb
+
+    $bytes = New-Object System.Collections.Generic.List[byte]
+    $bytes.Add(0x08)
+    $bytes.Add(0); $bytes.Add(0)
+    $bytes.Add(0x01)
+    $bytes.Add(0x04)
+
+    $ts = [uint32][int](Get-Date -UFormat %s)
+    $tb = [System.BitConverter]::GetBytes($ts); [array]::Reverse($tb); $bytes.AddRange($tb)
+
+    $bytes.Add([byte]$vectors.Count)
+
+    function addInt16Raw($lst, $val) {
+        $r = [math]::Round(($val) / [math]::Pow(2,-5))
+        $s = [System.BitConverter]::GetBytes([int16]$r); [array]::Reverse($s); $lst.AddRange($s)
+    }
+
+    foreach ($v in $vectors) {
+        addInt16Raw $bytes $v.x1
+        addInt16Raw $bytes $v.y1
+        addInt16Raw $bytes $v.x2
+        addInt16Raw $bytes $v.y2
+        $bytes.Add([byte]($v.intensity -as [int]))
+        $idb = [System.BitConverter]::GetBytes([int16]$v.id); [array]::Reverse($idb); $bytes.AddRange($idb)
+    }
+
+    $len = $bytes.Count
+    $lb = [System.BitConverter]::GetBytes([uint16]$len); [array]::Reverse($lb)
+    $bytes[1] = $lb[0]; $bytes[2] = $lb[1]
+
+    $arr = $bytes.ToArray()
+    $udp.Send($arr, $arr.Length, $server, $port) > $null
+    Start-Sleep -Milliseconds 300
+}
+
+===== Notes & Quick Tips =====
+
+Save this text, split by the headers ===== filename ===== into real files named exactly (e.g. mainwindow.cpp, cat08parser.cpp, etc.).
+
+Open Cat08Viewer.pro in Qt Creator, configure a Qt5 kit (5.12 recommended), run qmake, build, run.
+
+Use the PowerShell broadcast script to send test moving vectors.
+
+To test multicast, change destination to the multicast group (e.g. "239.255.0.1") and start the app in Multicast mode (enter group IP).
+
+
+
+---
+
+If you want, I can:
+
+Produce a ready-made ZIP (I can format the file tree here for copy) — tell me and I’ll produce a folder listing to paste into your environment.
+
+Or I can now auto-split this single TXT into individual file contents for you if you prefer (I will output each file separately again).
+
+
+Tell me which next step you want (zip or split into files), otherwise start building using the file headers above.
